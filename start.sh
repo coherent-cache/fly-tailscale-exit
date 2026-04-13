@@ -57,16 +57,25 @@ if [ -n "$TAILSCALE_OAUTH_CLIENT_ID" ] && [ -n "$TAILSCALE_OAUTH_SECRET" ]; then
     /app/tailscale up \
         --auth-key=${AUTH_KEY} \
         --hostname=fly-${FLY_REGION} \
-        --advertise-exit-node
+        --advertise-exit-node \
+        --advertise-tags=tag:fly-exit
 else
     # Use Auth Key authentication directly
     echo "Using Auth Key authentication"
     /app/tailscale up \
         --auth-key=${TAILSCALE_AUTH_KEY} \
         --hostname=fly-${FLY_REGION} \
-        --advertise-exit-node #\
-        #--advertise-tags=tag:fly-exit # requires ACL tagOwners
+        --advertise-exit-node \
+        --advertise-tags=tag:fly-exit
 fi
 
+cleanup() {
+    echo "Shutting down — deregistering from tailnet..."
+    /app/tailscale logout 2>/dev/null || true
+    kill "$(cat /var/run/tailscale/tailscaled.pid 2>/dev/null)" 2>/dev/null || true
+}
+trap cleanup INT TERM
+
 echo "Tailscale started. Let's go!"
-sleep infinity
+sleep infinity &
+wait $!

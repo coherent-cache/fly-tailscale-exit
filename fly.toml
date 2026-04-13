@@ -3,8 +3,8 @@
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
 
-app = "tailwings"
-primary_region = "nrt"
+app = "flyscale-exit"
+primary_region = "iad"
 kill_signal = "SIGINT"
 kill_timeout = "5s"
 
