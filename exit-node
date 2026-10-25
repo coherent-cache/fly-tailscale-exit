@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# Control the Fly exit node "fly-exit" (one Tailscale identity that moves between regions)
+# through the flyscale-control Worker.
+#   exit-node use [region] [hours]   move fly-exit to <region> (fzf picker without one) and route
+#                                    this Mac through it; devices already using it follow
+#   exit-node off                    stop routing this Mac, then stop fly-exit
+#   exit-node status                 where fly-exit runs and whether this Mac uses it
+# CONTROL_TOKEN lives in the keychain: service flyscale-control, account control_token.
+set -euo pipefail
+
+URL=${FLYSCALE_CONTROL_URL:-https://flyscale-control.crashtestdummy7.workers.dev}
+TOKEN=$(security find-generic-password -s flyscale-control -a control_token -w 2>/dev/null) ||
+  { echo "Missing keychain item flyscale-control/control_token" >&2; exit 1; }
+
+api() { # method path [query]
+  local out code
+  out=$(curl -sS -m 30 -X "$1" -H "Authorization: Bearer $TOKEN" -w '\n%{http_code}' "$URL$2${3:+?$3}")
+  code=${out##*$'\n'}; out=${out%$'\n'*}
+  [[ $code == 2* ]] || { echo "Worker $1 $2: HTTP $code $out" >&2; exit 1; }
+  printf '%s' "$out"
+}
+
+where() { # where this Mac's traffic leaves, as Cloudflare sees it
+  curl -s -m 10 https://www.cloudflare.com/cdn-cgi/trace | awk -F= '$1=="ip"{ip=$2} $1=="loc"{loc=$2} $1=="colo"{colo=$2} END{print loc" via "colo" ("ip")"}'
+}
+
+wait_move() { # requested_at; follows that request until it finishes or a newer one replaces it
+  local s i phase shown=""
+  for ((i = 0; i < 120; i++)); do
+    # This Mac may route through the node being moved, so requests can fail mid-move.
+    if s=$(api GET /status live=1 2>/dev/null); then
+      if jq -e --argjson at "$1" '.progress.requested_at > $at' <<<"$s" >/dev/null; then
+        echo "Replaced by a newer request: moving to $(jq -r .progress.target <<<"$s")" >&2; exit 1
+      fi
+      phase=$(jq -r .progress.phase <<<"$s")
+      [[ $phase != "$shown" && -t 2 ]] && { printf '  %s…\n' "$phase" >&2; shown=$phase; }
+      case $phase in
+        done) printf '%s' "$s"; return ;;
+        error) echo "Move failed while $(jq -r .progress.failed_phase <<<"$s"): $(jq -r .progress.error <<<"$s")" >&2; exit 1 ;;
+      esac
+    fi
+    sleep 1.5
+  done
+  echo "Timed out waiting for the move" >&2; exit 1
+}
+
+case "${1:-status}" in
+  use)
+    region=${2:-}
+    if [[ -z $region ]]; then
+      region=$(api GET /status | jq -r '.regions | to_entries[] | "\(.key)\t\(.value)"' |
+        fzf --height=~12 --reverse --prompt="Region: " --with-nth=2 | cut -f1)
+      [[ -n $region ]] || exit 1
+    fi
+    t0=$(date +%s)
+    at=$(api POST /use "region=$region${3:+&hours=$3}" | jq .progress.requested_at)
+    s=$(wait_move "$at")
+    tailscale set --exit-node="$(jq -r .device.ip <<<"$s")"
+    echo "fly-exit: $(jq -r '"\(.exit.label) (\(.device.name), \(.device.ip))"' <<<"$s") in $(( $(date +%s) - t0 ))s${3:+, for ${3}h}"
+    echo "This Mac: $(where)" ;;
+  off)
+    tailscale set --exit-node=
+    wait_move "$(api POST /off | jq .progress.requested_at)" >/dev/null
+    echo "fly-exit stopped. This Mac: $(where)" ;;
+  status)
+    api GET /status | jq -r '
+      (if .progress.phase as $p | ["queued","stopping","creating","starting","joining"] | index($p) then "Moving to \(.progress.target): \(.progress.phase)…"
+       elif .exit then "\(if .exit.online then "●" else "○" end) fly-exit in \(.exit.label) (\(.exit.region))  \(.device.name // "-") \(.device.ip // "")\(if .exit.egress then "  exits as \(.exit.egress.country)" else "" end)\(if .exit.ttl_until then "  until \(.exit.ttl_until)" else "" end)"
+       else "○ fly-exit is off" end),
+      (if .progress.phase == "error" then "last move failed while \(.progress.failed_phase): \(.progress.error)" else empty end),
+      (if .usage then "last \(.usage.window_days)d, projected to 30d:" else empty end),
+      (if .usage then (.usage.egress | to_entries[] | "  egress \(.key): \(.value.used_gb) GB -> ~\(.value.projected_gb)/\(.value.allowance_gb) GB") else empty end),
+      (if .usage then "  machines: ~$\(.usage.machine_usd_projected)/$\(.usage.machine_allowance_usd)" else empty end)'
+    mac=$(tailscale status --json | jq -r '(.ExitNodeStatus.TailscaleIPs[0] // "" | split("/")[0]) // ""')
+    echo "This Mac:  ${mac:+using exit $mac — }$(where)" ;;
+  *) sed -n '2,8p' "$0" | sed 's/^# //'; exit 1 ;;
+esac

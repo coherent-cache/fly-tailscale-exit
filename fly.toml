@@ -10,6 +10,8 @@ kill_timeout = "5s"
 
 [env]
   PORT = "41641"
+  # start.sh restores and saves the stable fly-exit identity here (control/README.md).
+  CONTROL_URL = "https://flyscale-control.crashtestdummy7.workers.dev"
 
 [[services]]
   protocol = "udp"

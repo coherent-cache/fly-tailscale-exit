@@ -1,0 +1,34 @@
+name = "flyscale-control"
+main = "src/worker.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+
+[triggers]
+crons = ["*/10 * * * *"]   # turn the exit off when its ttl_until has passed
+
+# One Switcher instance serializes every move, and stores the node's identity and last egress.
+[[durable_objects.bindings]]
+name = "SWITCHER"
+class_name = "Switcher"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Switcher"]
+
+[vars]
+FLY_APP = "flyscale-exit"
+FLY_ORG = "personal"
+# Regions a CONTROL_TOKEN holder may move fly-exit to (code -> label).
+REGIONS = '''{
+  "nrt": "Tokyo", "sin": "Singapore", "syd": "Sydney",
+  "lhr": "London", "fra": "Frankfurt", "ams": "Amsterdam",
+  "iad": "Virginia", "sjc": "San Jose"
+}'''
+
+# Secrets (wrangler secret put):
+#   FLY_API_TOKEN      `fly tokens create deploy -a flyscale-exit` (full "FlyV1 ..." string)
+#   TS_CLIENT_ID       the exit node's Tailscale OAuth client (keychain service flyscale-exit)
+#   TS_CLIENT_SECRET
+#   NODE_TOKEN         random; also the Fly app secret CONTROL_NODE_TOKEN read by start.sh
+#   CONTROL_TOKEN      random; held by the Mac keychain (flyscale-control) and the Apple Shortcut
+#   FLY_METRICS_TOKEN  `fly tokens create readonly personal`, for the usage panel
